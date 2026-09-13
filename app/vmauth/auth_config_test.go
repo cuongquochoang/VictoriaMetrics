@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -948,7 +950,10 @@ func TestBrokenBackend(t *testing.T) {
 	}
 }
 
-func TestDiscoverBackendIPsWithIPV6(t *testing.T) {
+func TestDiscoverBackendIPsWithEnableTCP6(t *testing.T) {
+	setTCP6EnabledForTest(t, true)
+<<<<<<< HEAD
+
 	f := func(actualUrl, expectedUrl string) {
 		t.Helper()
 		up := mustParseURL(actualUrl)
@@ -968,13 +973,14 @@ func TestDiscoverBackendIPsWithIPV6(t *testing.T) {
 			t.Fatalf(`expected url to be %q; got %q instead`, expectedUrl, bus[0].url.Host)
 		}
 	}
+=======
+>>>>>>> 7737ab528 (app/vmauth: respect enableTCP6 in backend discovery)
 
 	// Discover backendURL with SRV hostnames
-	customResolver := &fakeResolver{
-		Resolver: &net.Resolver{},
+	f := newBackendIPDiscoveryTest(t,
 		// SRV records must return hostname
 		// not an IP address
-		lookupSRVResults: map[string][]*net.SRV{
+		map[string][]*net.SRV{
 			"_vmselect._tcp.selectwithport.": {
 				{
 					Target: "vmselect.local",
@@ -987,7 +993,7 @@ func TestDiscoverBackendIPsWithIPV6(t *testing.T) {
 				},
 			},
 		},
-		lookupIPAddrResults: map[string][]net.IPAddr{
+		map[string][]net.IPAddr{
 			"vminsert.local": {
 				{
 					IP: net.ParseIP("10.0.10.13"),
@@ -999,12 +1005,7 @@ func TestDiscoverBackendIPsWithIPV6(t *testing.T) {
 				},
 			},
 		},
-	}
-	origResolver := netutil.Resolver
-	netutil.Resolver = customResolver
-	defer func() {
-		netutil.Resolver = origResolver
-	}()
+	)
 	f("http://srv+_vmselect._tcp.selectwithport.:8080", "vmselect.local:8080")
 	f("http://srv+_vmselect._tcp.selectwithport.:", "vmselect.local:8481")
 	f("http://srv+_vmselect._tcp.selectwoport.:8080", "vmselect.local:8080")
@@ -1014,7 +1015,125 @@ func TestDiscoverBackendIPsWithIPV6(t *testing.T) {
 	f("http://vminsert.local", "10.0.10.13:")
 	f("http://ipv6.vminsert.local:8080", "[2607:f8b0:400a:80b::200e]:8080")
 	f("http://ipv6.vminsert.local", "[2607:f8b0:400a:80b::200e]:")
+}
 
+func TestDiscoverBackendIPsWithoutEnableTCP6(t *testing.T) {
+	setTCP6EnabledForTest(t, false)
+
+	f := newBackendIPDiscoveryTest(t, nil,
+		map[string][]net.IPAddr{
+			"vminsert.local": {
+				{
+					IP: net.ParseIP("10.0.10.13"),
+				},
+				{
+					IP: net.ParseIP("2607:f8b0:400a:80b::200e"),
+				},
+			},
+		},
+	)
+	f("http://vminsert.local:8080", "10.0.10.13:8080")
+	f("http://vminsert.local", "10.0.10.13:")
+}
+
+func newBackendIPDiscoveryTest(t *testing.T, srvResults map[string][]*net.SRV, ipResults map[string][]net.IPAddr) func(string, string) {
+	t.Helper()
+	origResolver := netutil.Resolver
+	netutil.Resolver = &fakeResolver{
+		Resolver:            &net.Resolver{},
+		lookupSRVResults:    srvResults,
+		lookupIPAddrResults: ipResults,
+	}
+	t.Cleanup(func() {
+		netutil.Resolver = origResolver
+	})
+
+	return func(actualURL, expectedHost string) {
+		t.Helper()
+		up := mustParseURL(actualURL)
+		up.discoverBackendIPs = true
+		up.loadBalancingPolicy = "least_loaded"
+
+		up.discoverBackendAddrsIfNeeded()
+		pbus := up.bus.Load()
+		bus := pbus.bus
+
+		if len(bus) != 1 {
+			t.Fatalf("expected url list to be of size 1; got %d instead", len(bus))
+		}
+		if got := bus[0].url.Host; got != expectedHost {
+			t.Fatalf(`expected url to be %q; got %q instead`, expectedHost, got)
+		}
+	}
+}
+
+func setTCP6EnabledForTest(t *testing.T, enabled bool) {
+	t.Helper()
+	originalValue := netutil.TCP6Enabled()
+	if err := flag.Set("enableTCP6", strconv.FormatBool(enabled)); err != nil {
+		t.Fatalf("cannot set -enableTCP6=%t: %s", enabled, err)
+	}
+	t.Cleanup(func() {
+		if err := flag.Set("enableTCP6", strconv.FormatBool(originalValue)); err != nil {
+			t.Fatalf("cannot restore -enableTCP6=%t: %s", originalValue, err)
+		}
+	})
+}
+
+func TestDiscoverBackendIPsWithoutEnableTCP6(t *testing.T) {
+	setTCP6EnabledForTest(t, false)
+
+	f := func(actualURL, expectedHost string) {
+		t.Helper()
+		up := mustParseURL(actualURL)
+		up.discoverBackendIPs = true
+		up.loadBalancingPolicy = "least_loaded"
+
+		up.discoverBackendAddrsIfNeeded()
+		pbus := up.bus.Load()
+		bus := pbus.bus
+
+		if len(bus) != 1 {
+			t.Fatalf("expected url list to be of size 1; got %d instead", len(bus))
+		}
+		if got := bus[0].url.Host; got != expectedHost {
+			t.Fatalf(`expected url to be %q; got %q instead`, expectedHost, got)
+		}
+	}
+
+	customResolver := &fakeResolver{
+		Resolver: &net.Resolver{},
+		lookupIPAddrResults: map[string][]net.IPAddr{
+			"vminsert.local": {
+				{
+					IP: net.ParseIP("10.0.10.13"),
+				},
+				{
+					IP: net.ParseIP("2607:f8b0:400a:80b::200e"),
+				},
+			},
+		},
+	}
+	origResolver := netutil.Resolver
+	netutil.Resolver = customResolver
+	defer func() {
+		netutil.Resolver = origResolver
+	}()
+	f("http://vminsert.local:8080", "10.0.10.13:8080")
+	f("http://vminsert.local", "10.0.10.13:")
+}
+
+func setTCP6EnabledForTest(t *testing.T, enabled bool) {
+	t.Helper()
+	originalValue := netutil.TCP6Enabled()
+	if err := flag.Set("enableTCP6", strconv.FormatBool(enabled)); err != nil {
+		t.Fatalf("cannot set -enableTCP6=%t: %s", enabled, err)
+	}
+	t.Cleanup(func() {
+		if err := flag.Set("enableTCP6", strconv.FormatBool(originalValue)); err != nil {
+			t.Fatalf("cannot restore -enableTCP6=%t: %s", originalValue, err)
+		}
+	})
 }
 
 func TestLogRequest(t *testing.T) {
